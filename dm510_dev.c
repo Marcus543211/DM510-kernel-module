@@ -7,7 +7,8 @@
 #endif
 
 #include <linux/module.h>
-#include <linux/init.h>
+#include <linux/init.h> 
+#include <linux/cdev.h>
 #include <linux/slab.h>	
 #include <linux/kernel.h>
 #include <linux/fs.h>
@@ -34,6 +35,25 @@ long dm510_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
 
 #define DEVICE_COUNT 2
 /* end of what really should have been in a .h file */
+
+#define BUFFER_SIZE 4000
+
+struct buffer {
+	wait_queue_head_t readq, writeq;
+	char *start, *end;
+	int buffersize;
+	char *rp, *wp;
+	struct mutex mutex;
+};
+
+struct dm510 {
+	struct buffer *readbuf, writebuf;
+	int maxreaders, nreaders, nwriters;
+	struct mutex mutex;
+	struct cdev cdev;
+};
+
+struct dm510 dm510_devices[DEVICE_COUNT];
 
 /* file operations struct */
 static struct file_operations dm510_fops = {
