@@ -19,11 +19,12 @@
 #include <linux/semaphore.h>
 /* #include <asm/system.h> */
 #include <asm/switch_to.h>
+
 /* Prototypes - this would normally go in a .h file */
-static int dm510_open( struct inode*, struct file* );
-static int dm510_release( struct inode*, struct file* );
-static ssize_t dm510_read( struct file*, char*, size_t, loff_t* );
-static ssize_t dm510_write( struct file*, const char*, size_t, loff_t* );
+static int dm510_open(struct inode*, struct file*);
+static int dm510_release(struct inode*, struct file*);
+static ssize_t dm510_read(struct file*, char*, size_t, loff_t*);
+static ssize_t dm510_write(struct file*, const char*, size_t, loff_t*);
 long dm510_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
 
 #define DEVICE_NAME "dm510_dev" /* Dev name as it appears in /proc/devices */
@@ -45,7 +46,7 @@ static struct file_operations dm510_fops = {
 };
 
 /* called when module is loaded */
-int dm510_init_module( void ) {
+int dm510_init_module(void) {
 
 	/* initialization code belongs here */
 
@@ -54,7 +55,7 @@ int dm510_init_module( void ) {
 }
 
 /* Called when module is unloaded */
-void dm510_cleanup_module( void ) {
+void dm510_cleanup_module(void) {
 
 	/* clean up code belongs here */
 
@@ -63,7 +64,7 @@ void dm510_cleanup_module( void ) {
 
 
 /* Called when a process tries to open the device file */
-static int dm510_open( struct inode *inode, struct file *filp ) {
+static int dm510_open(struct inode *inode, struct file *filp) {
 	
 	/* device claiming code belongs here */
 
@@ -72,7 +73,7 @@ static int dm510_open( struct inode *inode, struct file *filp ) {
 
 
 /* Called when a process closes the device file. */
-static int dm510_release( struct inode *inode, struct file *filp ) {
+static int dm510_release(struct inode *inode, struct file *filp) {
 
 	/* device release code belongs here */
 		
@@ -81,10 +82,11 @@ static int dm510_release( struct inode *inode, struct file *filp ) {
 
 
 /* Called when a process, which already opened the dev file, attempts to read from it. */
-static ssize_t dm510_read( struct file *filp,
+static ssize_t dm510_read(
+    struct file *filp,
     char *buf,      /* The buffer to fill with data     */
     size_t count,   /* The max number of bytes to read  */
-    loff_t *f_pos )  /* The offset in the file           */
+    loff_t *f_pos)  /* The offset in the file           */
 {
 	
 	/* read code belongs here */
@@ -94,10 +96,11 @@ static ssize_t dm510_read( struct file *filp,
 
 
 /* Called when a process writes to dev file */
-static ssize_t dm510_write( struct file *filp,
+static ssize_t dm510_write(
+    struct file *filp,
     const char *buf,/* The buffer to get data from      */
     size_t count,   /* The max number of bytes to write */
-    loff_t *f_pos )  /* The offset in the file           */
+    loff_t *f_pos)  /* The offset in the file           */
 {
 
 	/* write code belongs here */	
@@ -109,7 +112,7 @@ static ssize_t dm510_write( struct file *filp,
 long dm510_ioctl( 
     struct file *filp, 
     unsigned int cmd,   /* command passed from the user */
-    unsigned long arg ) /* argument of the command */
+    unsigned long arg) /* argument of the command */
 {
 	/* ioctl code belongs here */
 	printk(KERN_INFO "DM510: ioctl called.\n");
@@ -117,8 +120,8 @@ long dm510_ioctl(
 	return 0; //has to be changed
 }
 
-module_init( dm510_init_module );
-module_exit( dm510_cleanup_module );
+module_init(dm510_init_module);
+module_exit(dm510_cleanup_module);
 
-MODULE_AUTHOR( "...Your names here. Do not delete the three dots in the beginning." );
-MODULE_LICENSE( "GPL" );
+MODULE_AUTHOR("...Jonathan Kilhof, Marcus Søndergaard, and Olivia Jespersen.");
+MODULE_LICENSE("GPL");
