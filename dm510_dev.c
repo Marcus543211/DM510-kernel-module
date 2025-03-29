@@ -209,7 +209,16 @@ static int dm510_open(struct inode *inode, struct file *filp) {
 /* Called when a process closes the device file. */
 static int dm510_release(struct inode *inode, struct file *filp) {
 	/* device release code belongs here */
-		
+	struct dm510 *dev = filp->private_data;
+
+	mutex_lock(&dev->mutex);
+	if (filp->f_mode & FMODE_READ) {
+		dev->nreaders--;
+	}
+	if (filp->f_mode & FMODE_WRITE) {
+		dev->nwriters--;
+	}
+	mutex_unlock(&dev->mutex);
 	return 0;
 }
 
