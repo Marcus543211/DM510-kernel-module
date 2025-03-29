@@ -39,7 +39,7 @@ long dm510_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
 #define BUFFER_SIZE 4000
 
 struct buffer {
-	wait_queue_head_t readq, writeq;
+	wait_queue_head_t readq /*outq*/, writeq /*inq*/;
 	char *start, *end;
 	int buffersize;
 	char *rp, *wp;
@@ -109,11 +109,72 @@ static ssize_t dm510_read(
     loff_t *f_pos)  /* The offset in the file           */
 {
 	
-	/* read code belongs here */
-	
-	return 0; //return number of bytes read
+	struct dm510 *dev = filp->private_data;
+	struct buffer *rbuf = dev->readbuf;
+		
+	if (mutex_lock_interruptible(&rbuf->mutex)) {
+		return -ERESTARTSYS;
+	}
+
+	while (rbuf->rp == rbuf->wp) {
+		mutex_unlock(&dev->mutex);
+		if (filp->f_flags & O_NONBLOCK) {
+			return -EAGAIN;
+		}
+		printk("\"%s\" reading: going to sleep\n", current->comm);
+		if (wait_event_interruptible(rbuf->writeq, (rbuf->rp != rbuf->wp))) {
+			return -ERESTARTSYS;
+		}
+	}
+
+	if (rbuf->wp > rbuf->rp) {
+		count = min (count, (size_t)(rbuf->wp - rbuf->rp));
+	}
+	else {
+		count = min(count, (size_t)(rbuf->end - rbuf->rp));
+	}
+	if (copy_to_user(buf, rbuf->rp, count)) {
+		mutex_unlock (&dev->mutex);
+		return -EFAULT;
+	}
+	rbuf->rp += count;
+	if (rbuf->rp == rbuf->end) {
+		rbuf->rp = rbuf->start;
+	}
+	mutex_unlock (&rbuf->mutex);
+
+	wake_up_interruptible(&rbuf->readq);
+	printk("\"%s\" did read %li bytes\n",current->comm, (long)count);
+	return count; //return number of bytes read
 }
 
+int spacefree(struct buffer *dev) {
+	if (dev->rp == dev->wp) {
+		return dev->buffersize - 1;
+	}
+	return ((dev->rp + dev->buffersize - dev->wp) % dev->buffersize) -1;
+}
+
+int getwritespace(struct buffer *dev, struct file *filp) {
+	while (spacefree(dev) == 0) {
+		DEFINE_WAIT(wait);
+
+		mutex_unlock(&dev->mutex);
+		if (filp->f_flags & O_NONBLOCK) {
+			return -EAGAIN;
+		}
+		printk("\"%s\" writing; going to sleep\n", current->comm);
+		prepare_to_wait(&dev->readq, &wait, TASK_INTERRUPTIBLE);
+		if (spacefree(dev) == 0)
+			schedule();
+		finish_wait(&dev->readq, &wait);
+		if (signal_pending(current))
+			return -ERESTARTSYS;
+		if (mutex_lock_interruptible(&dev->mutex))
+			return -ERESTARTSYS;
+	}
+	return 0;
+}
 
 /* Called when a process writes to dev file */
 static ssize_t dm510_write(
@@ -122,10 +183,41 @@ static ssize_t dm510_write(
     size_t count,   /* The max number of bytes to write */
     loff_t *f_pos)  /* The offset in the file           */
 {
+	struct dm510 *dev = filp->private_data;
+	struct buffer *wbuf = &dev->writebuf;
+	int result;
 
-	/* write code belongs here */	
+	if (mutex_lock_interruptible(&wbuf->mutex)) {
+		return -ERESTARTSYS;
+	}
 	
-	return 0; //return number of bytes written
+	result = getwritespace(wbuf, filp);
+	if (result) {
+		return result;
+	}
+	
+	count = min(count, (size_t)spacefree(wbuf));
+	if (wbuf->wp >= wbuf->rp) {
+		count = min(count, (size_t)(wbuf->end - wbuf->wp));
+	}
+	else {
+		count = min(count, (size_t)(wbuf->end - wbuf->wp));
+	}
+	printk("Going to accept %li bytes to %p from %p\n", (long)count, wbuf->wp, buf);
+	if (copy_from_user(wbuf->wp, buf, count)) {
+		mutex_unlock(&wbuf->mutex);
+		return -EFAULT;
+	}
+	wbuf->wp += count;
+	if (wbuf->wp == wbuf->end) {
+		wbuf->wp = wbuf->start;
+	}
+	mutex_unlock(&wbuf->mutex);
+
+	wake_up_interruptible(&wbuf->writeq);
+
+	printk("\"%s\" did write %li bytes\n", current->comm, (long)count);
+	return count; //return number of bytes written
 }
 
 /* called by system call ioctl */ 
