@@ -194,8 +194,10 @@ static int dm510_open(struct inode *inode, struct file *filp) {
 		dev->nwriters++;
 
 		/* clear the buffer */
-		if (mutex_lock_interruptible(&dev->writebuf.mutex))
+		if (mutex_lock_interruptible(&dev->writebuf.mutex)) {
+			mutex_unlock(&dev->mutex);
 			return -ERESTARTSYS;
+		}
 		dev->writebuf.rp = dev->writebuf.wp = dev->writebuf.start;
 		mutex_unlock(&dev->writebuf.mutex);
 	}
@@ -239,60 +241,63 @@ static ssize_t dm510_read(
 	}
 
 	while (rbuf->rp == rbuf->wp) {
-		mutex_unlock(&dev->mutex);
+		mutex_unlock(&rbuf->mutex);
 		if (filp->f_flags & O_NONBLOCK) {
 			return -EAGAIN;
 		}
-		printk("\"%s\" reading: going to sleep\n", current->comm);
+		// printk("\"%s\" reading: going to sleep\n", current->comm);
 		if (wait_event_interruptible(rbuf->writeq, (rbuf->rp != rbuf->wp))) {
+			return -ERESTARTSYS;
+		}
+		if (mutex_lock_interruptible(&rbuf->mutex)) {
 			return -ERESTARTSYS;
 		}
 	}
 
 	if (rbuf->wp > rbuf->rp) {
-		count = min (count, (size_t)(rbuf->wp - rbuf->rp));
+		count = min(count, (size_t)(rbuf->wp - rbuf->rp));
 	}
 	else {
 		count = min(count, (size_t)(rbuf->end - rbuf->rp));
 	}
 	if (copy_to_user(buf, rbuf->rp, count)) {
-		mutex_unlock (&dev->mutex);
+		mutex_unlock(&rbuf->mutex);
 		return -EFAULT;
 	}
 	rbuf->rp += count;
 	if (rbuf->rp == rbuf->end) {
 		rbuf->rp = rbuf->start;
 	}
-	mutex_unlock (&rbuf->mutex);
+	mutex_unlock(&rbuf->mutex);
 
 	wake_up_interruptible(&rbuf->readq);
-	printk("\"%s\" did read %li bytes\n",current->comm, (long)count);
+	// printk("\"%s\" did read %li bytes\n",current->comm, (long)count);
 	return count; //return number of bytes read
 }
 
-int spacefree(struct buffer *dev) {
-	if (dev->rp == dev->wp) {
-		return dev->buffersize - 1;
+int spacefree(struct buffer *buf) {
+	if (buf->rp == buf->wp) {
+		return buf->buffersize - 1;
 	}
-	return ((dev->rp + dev->buffersize - dev->wp) % dev->buffersize) -1;
+	return ((buf->rp + buf->buffersize - buf->wp) % buf->buffersize) -1;
 }
 
-int getwritespace(struct buffer *dev, struct file *filp) {
-	while (spacefree(dev) == 0) {
+int getwritespace(struct buffer *buf, struct file *filp) {
+	while (spacefree(buf) == 0) {
 		DEFINE_WAIT(wait);
 
-		mutex_unlock(&dev->mutex);
+		mutex_unlock(&buf->mutex);
 		if (filp->f_flags & O_NONBLOCK) {
 			return -EAGAIN;
 		}
-		printk("\"%s\" writing; going to sleep\n", current->comm);
-		prepare_to_wait(&dev->readq, &wait, TASK_INTERRUPTIBLE);
-		if (spacefree(dev) == 0)
+		// printk("\"%s\" writing; going to sleep\n", current->comm);
+		prepare_to_wait(&buf->readq, &wait, TASK_INTERRUPTIBLE);
+		if (spacefree(buf) == 0)
 			schedule();
-		finish_wait(&dev->readq, &wait);
+		finish_wait(&buf->readq, &wait);
 		if (signal_pending(current))
 			return -ERESTARTSYS;
-		if (mutex_lock_interruptible(&dev->mutex))
+		if (mutex_lock_interruptible(&buf->mutex))
 			return -ERESTARTSYS;
 	}
 	return 0;
@@ -315,7 +320,7 @@ static ssize_t dm510_write(
 	
 	result = getwritespace(wbuf, filp);
 	if (result) {
-		return result;
+		return result; /* getwritespace called mutex_unlock */
 	}
 	
 	count = min(count, (size_t)spacefree(wbuf));
@@ -325,7 +330,7 @@ static ssize_t dm510_write(
 	else {
 		count = min(count, (size_t)(wbuf->end - wbuf->wp));
 	}
-	printk("Going to accept %li bytes to %p from %p\n", (long)count, wbuf->wp, buf);
+	// printk("Going to accept %li bytes to %p from %p\n", (long)count, wbuf->wp, buf);
 	if (copy_from_user(wbuf->wp, buf, count)) {
 		mutex_unlock(&wbuf->mutex);
 		return -EFAULT;
@@ -338,7 +343,7 @@ static ssize_t dm510_write(
 
 	wake_up_interruptible(&wbuf->writeq);
 
-	printk("\"%s\" did write %li bytes\n", current->comm, (long)count);
+	// printk("\"%s\" did write %li bytes\n", current->comm, (long)count);
 	return count; //return number of bytes written
 }
 
