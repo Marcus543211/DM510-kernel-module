@@ -34,9 +34,21 @@ long dm510_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
 #define MAX_MINOR_NUMBER 1
 
 #define DEVICE_COUNT 2
+
+/* Ioctl definitions */
+#define DM510_IOC_MAGIC 'J'
+
+#define DM510_IOCRESET       _IO(DM510_IOC_MAGIC, 0)
+#define DM510_IOCTMAXREADERS _IO(DM510_IOC_MAGIC, 1)
+#define DM510_IOCTBUFFERSIZE _IO(DM510_IOC_MAGIC, 2)
+#define DM510_IOCQMAXREADERS _IO(DM510_IOC_MAGIC, 3)
+#define DM510_IOCQBUFFERSIZE _IO(DM510_IOC_MAGIC, 4)
+
+#define DM510_IOC_MAXNR 4
 /* end of what really should have been in a .h file */
 
 #define BUFFER_SIZE 4000
+#define MAX_READERS 10000
 
 struct buffer {
 	wait_queue_head_t readq /*outq*/, writeq /*inq*/;
@@ -65,36 +77,137 @@ static struct file_operations dm510_fops = {
         .unlocked_ioctl   = dm510_ioctl
 };
 
-/* called when module is loaded */
-int dm510_init_module(void) {
-
-	/* initialization code belongs here */
-
-	printk(KERN_INFO "DM510: Hello from your device!\n");
+/* allocates a buffer, assumes mutex is held or similar */
+int alloc_buffer(struct buffer *buf, size_t size) {
+	buf->start = kmalloc(size, GFP_KERNEL);
+	if (!buf->start) {
+		return -ENOMEM;
+	}
+	buf->rp = buf->wp = buf->start;
+	buf->end = buf->start + size;
+	buf->buffersize = size;
 	return 0;
+}
+
+/* frees buffer */
+void free_buffer(struct buffer *buf) {
+	kfree(buf->start);
+}
+
+/* allocates and sets up a buffer */
+int setup_buffer(struct buffer *buf) {
+	init_waitqueue_head(&buf->readq);
+	init_waitqueue_head(&buf->writeq);
+	mutex_init(&buf->mutex);
+	return alloc_buffer(buf, BUFFER_SIZE);
+}
+
+/* setup of a struct dm510, allocates writebuf, sets readbuf to NULL */
+int setup_device(struct dm510 *dev, int index) {
+	int err, devno = MKDEV(MAJOR_NUMBER, index);
+
+	err = setup_buffer(&dev->writebuf);
+	if (err) {
+		return err;
+	}
+	dev->readbuf = NULL;
+	dev->maxreaders = MAX_READERS;
+	dev->nreaders = dev->nwriters = 0;
+
+	mutex_init(&dev->mutex);
+
+	cdev_init(&dev->cdev, &dm510_fops);
+	dev->cdev.owner = THIS_MODULE;
+	err = cdev_add(&dev->cdev, devno, 1);
+	if (err) {
+		printk(KERN_NOTICE "Error %d adding dm510-%d", err, index);
+	}
+	return 0;
+}
+
+/* free resources from a struct dm510 */
+void cleanup_device(struct dm510 *dev) {
+	cdev_del(&dev->cdev);
+	free_buffer(&dev->writebuf);
 }
 
 /* Called when module is unloaded */
 void dm510_cleanup_module(void) {
-
 	/* clean up code belongs here */
+	dev_t devno = MKDEV(MAJOR_NUMBER, MIN_MINOR_NUMBER);
+	unregister_chrdev_region(devno, DEVICE_COUNT);
+
+	cleanup_device(&dm510_devices[0]);
+	cleanup_device(&dm510_devices[1]);
 
 	printk(KERN_INFO "DM510: Module unloaded.\n");
 }
 
+/* called when module is loaded */
+int dm510_init_module(void) {
+	/* initialization code belongs here */
+	printk(KERN_INFO "DM510: Hello from your device!\n");
+
+	dev_t dev = MKDEV(MAJOR_NUMBER, MIN_MINOR_NUMBER);
+	int result = register_chrdev_region(dev, DEVICE_COUNT, DEVICE_NAME);
+	if (result < 0) {
+		printk(KERN_WARNING "DM510: can't get major %d\n", MAJOR_NUMBER);
+		return result;
+	}
+
+	int result0 = setup_device(&dm510_devices[0], 0);
+	int result1 = setup_device(&dm510_devices[1], 1);
+	if (result0 || result1) {
+		dm510_cleanup_module();
+		return result0 || result1;
+	}
+	dm510_devices[0].readbuf = &dm510_devices[1].writebuf;
+	dm510_devices[1].readbuf = &dm510_devices[0].writebuf;
+
+	return 0;
+}
 
 /* Called when a process tries to open the device file */
 static int dm510_open(struct inode *inode, struct file *filp) {
-	
 	/* device claiming code belongs here */
+	struct dm510 *dev;
 
-	return 0;
+	dev = container_of(inode->i_cdev, struct dm510, cdev);
+	filp->private_data = dev;
+
+	if (mutex_lock_interruptible(&dev->mutex)) {
+		return -ERESTARTSYS;
+	}
+
+	if (filp->f_mode & FMODE_READ) {
+		if (dev->nreaders >= dev->maxreaders) {
+			mutex_unlock(&dev->mutex);
+			return -EBUSY; /* already at max readers */
+		}
+		dev->nreaders++;
+	}
+	if (filp->f_mode & FMODE_WRITE) {
+		if (dev->nwriters > 0) {
+			mutex_unlock(&dev->mutex);
+			return -EBUSY; /* only one writer at a time */
+		}
+		dev->nwriters++;
+
+		/* clear the buffer */
+		if (mutex_lock_interruptible(&dev->writebuf.mutex))
+			return -ERESTARTSYS;
+		dev->writebuf.rp = dev->writebuf.wp = dev->writebuf.start;
+		mutex_unlock(&dev->writebuf.mutex);
+	}
+
+	mutex_unlock(&dev->mutex);
+
+	return nonseekable_open(inode, filp);
 }
 
 
 /* Called when a process closes the device file. */
 static int dm510_release(struct inode *inode, struct file *filp) {
-
 	/* device release code belongs here */
 		
 	return 0;
@@ -229,7 +342,50 @@ long dm510_ioctl(
 	/* ioctl code belongs here */
 	printk(KERN_INFO "DM510: ioctl called.\n");
 
-	return 0; //has to be changed
+	struct dm510 *dev = filp->private_data;
+	int retval = 0;
+
+	/* ensure command is valid */
+	if (_IOC_TYPE(cmd) != DM510_IOC_MAGIC) { return -ENOTTY; }
+	if (_IOC_NR(cmd) > DM510_IOC_MAXNR) { return -ENOTTY; }
+
+	if (mutex_lock_interruptible(&dev->mutex)) {
+		return -ERESTARTSYS;
+	}
+	if (mutex_lock_interruptible(&dev->writebuf.mutex)) {
+		return -ERESTARTSYS;
+	}
+
+	switch (cmd) {
+		case DM510_IOCRESET:
+			dev->maxreaders = MAX_READERS;
+			free_buffer(&dev->writebuf);
+			retval = alloc_buffer(&dev->writebuf, BUFFER_SIZE);
+			wake_up_interruptible(&dev->writebuf.writeq);
+			break;
+		case DM510_IOCTMAXREADERS:
+			dev->maxreaders = arg;
+			break;
+		case DM510_IOCTBUFFERSIZE:
+			free_buffer(&dev->writebuf);
+			retval = alloc_buffer(&dev->writebuf, arg);
+			wake_up_interruptible(&dev->writebuf.writeq);
+			break;
+		case DM510_IOCQMAXREADERS:
+			retval = dev->maxreaders;
+			break;
+		case DM510_IOCQBUFFERSIZE:
+			retval = dev->writebuf.buffersize;
+			break;
+		default: /* should never happen, as we check at the start */
+			retval = -ENOTTY;
+			break;
+	}
+
+	mutex_unlock(&dev->writebuf.mutex);
+	mutex_unlock(&dev->mutex);
+
+	return retval;
 }
 
 module_init(dm510_init_module);
