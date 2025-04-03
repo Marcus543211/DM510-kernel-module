@@ -51,7 +51,7 @@ long dm510_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
 #define MAX_READERS 10000
 
 struct buffer {
-	wait_queue_head_t readq /*outq*/, writeq /*inq*/;
+	wait_queue_head_t readq /*inq*/, writeq /*outq*/;
 	char *start, *end;
 	int buffersize;
 	char *rp, *wp;
@@ -133,7 +133,6 @@ void cleanup_device(struct dm510 *dev) {
 
 /* Called when module is unloaded */
 void dm510_cleanup_module(void) {
-	/* clean up code belongs here */
 	dev_t devno = MKDEV(MAJOR_NUMBER, MIN_MINOR_NUMBER);
 	unregister_chrdev_region(devno, DEVICE_COUNT);
 
@@ -145,7 +144,6 @@ void dm510_cleanup_module(void) {
 
 /* called when module is loaded */
 int dm510_init_module(void) {
-	/* initialization code belongs here */
 	printk(KERN_INFO "DM510: Hello from your device!\n");
 
 	dev_t dev = MKDEV(MAJOR_NUMBER, MIN_MINOR_NUMBER);
@@ -169,7 +167,6 @@ int dm510_init_module(void) {
 
 /* Called when a process tries to open the device file */
 static int dm510_open(struct inode *inode, struct file *filp) {
-	/* device claiming code belongs here */
 	struct dm510 *dev;
 
 	dev = container_of(inode->i_cdev, struct dm510, cdev);
@@ -210,7 +207,6 @@ static int dm510_open(struct inode *inode, struct file *filp) {
 
 /* Called when a process closes the device file. */
 static int dm510_release(struct inode *inode, struct file *filp) {
-	/* device release code belongs here */
 	struct dm510 *dev = filp->private_data;
 
 	mutex_lock(&dev->mutex);
@@ -232,7 +228,6 @@ static ssize_t dm510_read(
     size_t count,   /* The max number of bytes to read  */
     loff_t *f_pos)  /* The offset in the file           */
 {
-	
 	struct dm510 *dev = filp->private_data;
 	struct buffer *rbuf = dev->readbuf;
 		
@@ -246,7 +241,7 @@ static ssize_t dm510_read(
 			return -EAGAIN;
 		}
 		// printk("\"%s\" reading: going to sleep\n", current->comm);
-		if (wait_event_interruptible(rbuf->writeq, (rbuf->rp != rbuf->wp))) {
+		if (wait_event_interruptible(rbuf->readq, (rbuf->rp != rbuf->wp))) {
 			return -ERESTARTSYS;
 		}
 		if (mutex_lock_interruptible(&rbuf->mutex)) {
@@ -256,8 +251,7 @@ static ssize_t dm510_read(
 
 	if (rbuf->wp > rbuf->rp) {
 		count = min(count, (size_t)(rbuf->wp - rbuf->rp));
-	}
-	else {
+	} else {
 		count = min(count, (size_t)(rbuf->end - rbuf->rp));
 	}
 	if (copy_to_user(buf, rbuf->rp, count)) {
@@ -265,12 +259,12 @@ static ssize_t dm510_read(
 		return -EFAULT;
 	}
 	rbuf->rp += count;
-	if (rbuf->rp == rbuf->end) {
+	if (rbuf->rp >= rbuf->end) {
 		rbuf->rp = rbuf->start;
 	}
 	mutex_unlock(&rbuf->mutex);
 
-	wake_up_interruptible(&rbuf->readq);
+	wake_up_interruptible(&rbuf->writeq);
 	// printk("\"%s\" did read %li bytes\n",current->comm, (long)count);
 	return count; //return number of bytes read
 }
@@ -282,27 +276,6 @@ int spacefree(struct buffer *buf) {
 	return ((buf->rp + buf->buffersize - buf->wp) % buf->buffersize) -1;
 }
 
-int getwritespace(struct buffer *buf, struct file *filp) {
-	while (spacefree(buf) == 0) {
-		DEFINE_WAIT(wait);
-
-		mutex_unlock(&buf->mutex);
-		if (filp->f_flags & O_NONBLOCK) {
-			return -EAGAIN;
-		}
-		// printk("\"%s\" writing; going to sleep\n", current->comm);
-		prepare_to_wait(&buf->readq, &wait, TASK_INTERRUPTIBLE);
-		if (spacefree(buf) == 0)
-			schedule();
-		finish_wait(&buf->readq, &wait);
-		if (signal_pending(current))
-			return -ERESTARTSYS;
-		if (mutex_lock_interruptible(&buf->mutex))
-			return -ERESTARTSYS;
-	}
-	return 0;
-}
-
 /* Called when a process writes to dev file */
 static ssize_t dm510_write(
     struct file *filp,
@@ -312,15 +285,23 @@ static ssize_t dm510_write(
 {
 	struct dm510 *dev = filp->private_data;
 	struct buffer *wbuf = &dev->writebuf;
-	int result;
 
 	if (mutex_lock_interruptible(&wbuf->mutex)) {
 		return -ERESTARTSYS;
 	}
 	
-	result = getwritespace(wbuf, filp);
-	if (result) {
-		return result; /* getwritespace called mutex_unlock */
+	while (spacefree(wbuf) == 0) {
+		mutex_unlock(&wbuf->mutex);
+		if (filp->f_flags & O_NONBLOCK) {
+			return -EAGAIN;
+		}
+		// printk("\"%s\" writing; going to sleep\n", current->comm);
+		if (wait_event_interruptible(wbuf->writeq, (spacefree(wbuf) > 0))) {
+			return -ERESTARTSYS;
+		}
+		if (mutex_lock_interruptible(&wbuf->mutex)) {
+			return -ERESTARTSYS;
+		}
 	}
 	
 	count = min(count, (size_t)spacefree(wbuf));
@@ -336,12 +317,12 @@ static ssize_t dm510_write(
 		return -EFAULT;
 	}
 	wbuf->wp += count;
-	if (wbuf->wp == wbuf->end) {
+	if (wbuf->wp >= wbuf->end) {
 		wbuf->wp = wbuf->start;
 	}
 	mutex_unlock(&wbuf->mutex);
 
-	wake_up_interruptible(&wbuf->writeq);
+	wake_up_interruptible(&wbuf->readq);
 
 	// printk("\"%s\" did write %li bytes\n", current->comm, (long)count);
 	return count; //return number of bytes written
@@ -360,8 +341,12 @@ long dm510_ioctl(
 	int retval = 0;
 
 	/* ensure command is valid */
-	if (_IOC_TYPE(cmd) != DM510_IOC_MAGIC) { return -ENOTTY; }
-	if (_IOC_NR(cmd) > DM510_IOC_MAXNR) { return -ENOTTY; }
+	if (_IOC_TYPE(cmd) != DM510_IOC_MAGIC) {
+		return -ENOTTY;
+	}
+	if (_IOC_NR(cmd) > DM510_IOC_MAXNR) {
+		return -ENOTTY;
+	}
 
 	if (mutex_lock_interruptible(&dev->mutex)) {
 		return -ERESTARTSYS;
