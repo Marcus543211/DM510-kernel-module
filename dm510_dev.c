@@ -120,7 +120,8 @@ int setup_device(struct dm510 *dev, int index) {
 	dev->cdev.owner = THIS_MODULE;
 	err = cdev_add(&dev->cdev, devno, 1);
 	if (err) {
-		printk(KERN_NOTICE "Error %d adding dm510-%d", err, index);
+		printk(KERN_NOTICE "Error %d adding dm510-%d, aborting", err, index);
+		return err;
 	}
 	return 0;
 }
