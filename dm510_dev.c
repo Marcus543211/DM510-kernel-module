@@ -368,25 +368,33 @@ long dm510_ioctl(
 
 	switch (cmd) {
 		case DM510_IOCRESET:
-			dev->maxreaders = MAX_READERS;
-			free_buffer(&dev->writebuf);
-			retval = alloc_buffer(&dev->writebuf, BUFFER_SIZE);
-			wake_up_interruptible(&dev->writebuf.writeq);
+			if (!capable(CAP_SYS_ADMIN)) {
+				retval = -EPERM; /* need privileges */
+			} else {
+				dev->maxreaders = MAX_READERS;
+				free_buffer(&dev->writebuf);
+				retval = alloc_buffer(&dev->writebuf, BUFFER_SIZE);
+				wake_up_interruptible(&dev->writebuf.writeq);
+			}
 			break;
 		case DM510_IOCTMAXREADERS:
-			if (arg >= 0) {
-				dev->maxreaders = arg;
-			} else {
+			if (!capable(CAP_SYS_ADMIN)) {
+				retval = -EPERM; /* need privileges */
+			} else if (arg < 0) {
 				retval = -EINVAL; /* reader max can't be negative */
+			} else {
+				dev->maxreaders = arg;
 			}
 			break;
 		case DM510_IOCTBUFFERSIZE:
-			if (arg > 0) {
+			if (!capable(CAP_SYS_ADMIN)) {
+				retval = -EPERM; /* need privileges */
+			} else if (arg <= 0) {
+				retval = -EINVAL; /* buffer can't be zero or negative */
+			} else {
 				free_buffer(&dev->writebuf);
 				retval = alloc_buffer(&dev->writebuf, arg);
 				wake_up_interruptible(&dev->writebuf.writeq);
-			} else {
-				retval = -EINVAL; /* buffer can't be zero or negative */
 			}
 			break;
 		case DM510_IOCQMAXREADERS:
