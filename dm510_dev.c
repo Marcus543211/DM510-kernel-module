@@ -374,12 +374,20 @@ long dm510_ioctl(
 			wake_up_interruptible(&dev->writebuf.writeq);
 			break;
 		case DM510_IOCTMAXREADERS:
-			dev->maxreaders = arg;
+			if (arg >= 0) {
+				dev->maxreaders = arg;
+			} else {
+				retval = -EINVAL; /* reader max can't be negative */
+			}
 			break;
 		case DM510_IOCTBUFFERSIZE:
-			free_buffer(&dev->writebuf);
-			retval = alloc_buffer(&dev->writebuf, arg);
-			wake_up_interruptible(&dev->writebuf.writeq);
+			if (arg > 0) {
+				free_buffer(&dev->writebuf);
+				retval = alloc_buffer(&dev->writebuf, arg);
+				wake_up_interruptible(&dev->writebuf.writeq);
+			} else {
+				retval = -EINVAL; /* buffer can't be zero or negative */
+			}
 			break;
 		case DM510_IOCQMAXREADERS:
 			retval = dev->maxreaders;
