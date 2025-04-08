@@ -140,12 +140,12 @@ void dm510_cleanup_module(void) {
 	cleanup_device(&dm510_devices[0]);
 	cleanup_device(&dm510_devices[1]);
 
-	printk(KERN_INFO "DM510: Module unloaded.\n");
+	//printk(KERN_INFO "DM510: Module unloaded.\n");
 }
 
 /* called when module is loaded */
 int dm510_init_module(void) {
-	printk(KERN_INFO "DM510: Hello from your device!\n");
+	//printk(KERN_INFO "DM510: Hello from your device!\n");
 
 	dev_t dev = MKDEV(MAJOR_NUMBER, MIN_MINOR_NUMBER);
 	int result = register_chrdev_region(dev, DEVICE_COUNT, DEVICE_NAME);
@@ -306,7 +306,6 @@ static ssize_t dm510_write(
 		if (filp->f_flags & O_NONBLOCK) {
 			return -EAGAIN;
 		}
-		// printk("\"%s\" writing; going to sleep\n", current->comm);
 		if (wait_event_interruptible(wbuf->writeq, (spacefree(wbuf) > 0))) {
 			return -ERESTARTSYS;
 		}
@@ -322,7 +321,6 @@ static ssize_t dm510_write(
 	else {
 		count = min(count, (size_t)(wbuf->end - wbuf->wp));
 	}
-	// printk("Going to accept %li bytes to %p from %p\n", (long)count, wbuf->wp, buf);
 	if (copy_from_user(wbuf->wp, buf, count)) {
 		mutex_unlock(&wbuf->mutex);
 		return -EFAULT;
@@ -335,8 +333,7 @@ static ssize_t dm510_write(
 
 	wake_up_interruptible(&wbuf->readq);
 
-	// printk("\"%s\" did write %li bytes\n", current->comm, (long)count);
-	return count; //return number of bytes written
+	return count; /* return number of bytes written */
 }
 
 /* called by system call ioctl */ 
@@ -345,8 +342,6 @@ long dm510_ioctl(
     unsigned int cmd,   /* command passed from the user */
     unsigned long arg) /* argument of the command */
 {
-	printk(KERN_INFO "DM510: ioctl called.\n");
-
 	struct dm510 *dev = filp->private_data;
 	int retval = 0;
 
