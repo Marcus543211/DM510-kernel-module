@@ -169,6 +169,7 @@ int dm510_init_module(void) {
 /* Called when a process tries to open the device file */
 static int dm510_open(struct inode *inode, struct file *filp) {
 	struct dm510 *dev;
+	int err = 0;
 
 	dev = container_of(inode->i_cdev, struct dm510, cdev);
 	filp->private_data = dev;
@@ -179,30 +180,38 @@ static int dm510_open(struct inode *inode, struct file *filp) {
 
 	if (filp->f_mode & FMODE_READ) {
 		if (dev->nreaders >= dev->maxreaders) {
-			mutex_unlock(&dev->mutex);
-			return -EBUSY; /* already at max readers */
+			err = -EBUSY; /* already at max readers */
+			goto fail;
 		}
 		dev->nreaders++;
 	}
 	if (filp->f_mode & FMODE_WRITE) {
 		if (dev->nwriters > 0) {
-			mutex_unlock(&dev->mutex);
-			return -EBUSY; /* only one writer at a time */
+			err = -EBUSY; /* only one writer at a time */
+			goto fail_write;
 		}
+		if (mutex_lock_interruptible(&dev->writebuf.mutex)) {
+			err = -ERESTARTSYS;
+			goto fail_write;
+		}
+
 		dev->nwriters++;
 
 		/* clear the buffer */
-		if (mutex_lock_interruptible(&dev->writebuf.mutex)) {
-			mutex_unlock(&dev->mutex);
-			return -ERESTARTSYS;
-		}
 		dev->writebuf.rp = dev->writebuf.wp = dev->writebuf.start;
 		mutex_unlock(&dev->writebuf.mutex);
 	}
 
 	mutex_unlock(&dev->mutex);
-
 	return nonseekable_open(inode, filp);
+
+fail_write:
+	if (filp->f_mode & FMODE_READ) {
+		dev->nreaders--;
+	}
+fail:
+	mutex_unlock(&dev->mutex);
+	return err;
 }
 
 
@@ -218,6 +227,7 @@ static int dm510_release(struct inode *inode, struct file *filp) {
 		dev->nwriters--;
 	}
 	mutex_unlock(&dev->mutex);
+
 	return 0;
 }
 
@@ -335,7 +345,6 @@ long dm510_ioctl(
     unsigned int cmd,   /* command passed from the user */
     unsigned long arg) /* argument of the command */
 {
-	/* ioctl code belongs here */
 	printk(KERN_INFO "DM510: ioctl called.\n");
 
 	struct dm510 *dev = filp->private_data;
@@ -353,6 +362,7 @@ long dm510_ioctl(
 		return -ERESTARTSYS;
 	}
 	if (mutex_lock_interruptible(&dev->writebuf.mutex)) {
+		mutex_unlock(&dev->mutex);
 		return -ERESTARTSYS;
 	}
 
