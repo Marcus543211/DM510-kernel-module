@@ -16,10 +16,13 @@
 
 int main(int argc, char *argv[]) {
 	char msg[] = "Hello this is a rather long message that should fill the buffer!";
+	char buf[10];
 	int buffersize = 8;
 	int res = 0;
+
 	// Open non-blocking
 	int fd = open("/dev/dm510-0", O_WRONLY | O_NONBLOCK);
+	int fd2 = open("/dev/dm510-1", O_RDONLY | O_NONBLOCK);
 
 	printf("Resetting device...\n");
 	res = ioctl(fd, DM510_IOCRESET, 0);
@@ -35,21 +38,31 @@ int main(int argc, char *argv[]) {
 		return -2;
 	}
 
+	printf("\nReading from the buffer...\n");
+	printf("This should fail with EAGAIN.\n");
+	res = read(fd2, buf, 10);
+	if (res != -1 && errno != EAGAIN) {
+		printf("ERROR. Reading from the buffer did not fail with EAGAIN: %d\n", errno);
+		return -3;
+	}
+	printf("SUCCESS. Failed with EAGAIN.\n");
+
 	printf("\nWriting to the buffer...\n");
 	printf("This should fill it up.\n");
 	res = write(fd, msg, strlen(msg));
 	if (res < 0) {
 		printf("ERROR. Failed to fill the buffer, got: %d\n", res);
-		return -3;
+		return -4;
 	}
 
 	printf("\nWriting to the buffer again...\n");
 	printf("This should fail with EAGAIN.\n");
 	res = write(fd, msg, strlen(msg));
 	if (res != -1 && errno != EAGAIN) {
-		printf("ERROR. Writing to the buffer did fail with EAGAIN: %d\n", errno);
-		return -4;
+		printf("ERROR. Writing to the buffer did not fail with EAGAIN: %d\n", errno);
+		return -5;
 	}
+	printf("SUCCESS. Failed with EAGAIN.\n");
 
 	printf("\nSUCCESS. Test completed without error.\n");
 
